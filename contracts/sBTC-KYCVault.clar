@@ -105,3 +105,95 @@
     (asserts! (is-some (map-get? kyc-vault tx-sender)) ERR-NOT-FOUND)
     (map-set kyc-vault tx-sender encrypted-data)
     (ok true)))
+
+
+    ;; Delete KYC data and revoke all access tokens
+    (define-public (delete-kyc-data)
+      (begin
+        (asserts! (is-some (map-get? kyc-vault tx-sender)) ERR-NOT-FOUND)
+        (map-delete kyc-vault tx-sender)
+        (ok true)))
+
+    ;; Transfer access token to another principal
+    (define-public (transfer-access (token-id uint) (to principal))
+      (let ((owner (unwrap! (nft-get-owner? kyc-access token-id) ERR-INVALID-TOKEN)))
+        (asserts! (is-eq tx-sender owner) ERR-NOT-AUTHORIZED)
+        (try! (nft-transfer? kyc-access token-id tx-sender to))
+        (map-set token-owners token-id to)
+        (ok true)))
+
+    ;; Batch grant access to multiple principals
+    (define-public (batch-grant-access (recipients (list 10 principal)))
+      (begin
+        (asserts! (is-some (map-get? kyc-vault tx-sender)) ERR-NOT-FOUND)
+        (ok (map grant-access-helper recipients))))
+
+    (define-private (grant-access-helper (recipient principal))
+      (let ((token-id (var-get next-token-id)))
+        (match (nft-mint? kyc-access token-id recipient)
+          success (begin
+            (map-set access-grants token-id tx-sender)
+            (map-set token-owners token-id recipient)
+            (var-set next-token-id (+ token-id u1))
+            token-id)
+          error u0)))
+
+    ;; Check if principal has access to specific user's data
+    (define-read-only (has-access-to (data-owner principal) (accessor principal))
+      (or 
+        (check-token-access-for u1 data-owner accessor)
+        (check-token-access-for u2 data-owner accessor)
+        (check-token-access-for u3 data-owner accessor)
+        (check-token-access-for u4 data-owner accessor)
+        (check-token-access-for u5 data-owner accessor)))
+
+    (define-private (check-token-access-for (token-id uint) (data-owner principal) (accessor principal))
+      (and 
+        (is-eq (map-get? access-grants token-id) (some data-owner))
+        (is-eq (nft-get-owner? kyc-access token-id) (some accessor))))
+
+    ;; Get total number of access tokens issued
+    (define-read-only (get-total-tokens)
+      (ok (- (var-get next-token-id) u1)))
+
+    ;; Emergency pause function (can be extended with admin controls)
+    (define-data-var contract-paused bool false)
+
+    (define-read-only (is-contract-paused)
+      (ok (var-get contract-paused)))
+
+    ;; Check if user can store KYC data (contract not paused)
+    (define-read-only (can-store-data)
+      (ok (not (var-get contract-paused))))
+
+
+    ;; Get access history for a user's data
+    (define-read-only (get-access-history (data-owner principal))
+      (ok (map-get? access-history data-owner)))
+
+    ;; Extend token expiry (only by data owner)
+    (define-public (extend-token-expiry (token-id uint) (new-expiry uint))
+      (let ((data-owner (unwrap! (map-get? access-grants token-id) ERR-INVALID-TOKEN)))
+        (asserts! (is-eq tx-sender data-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (> new-expiry block-height) ERR-NOT-AUTHORIZED)
+        (map-set token-expiry token-id new-expiry)
+        (ok true)))
+
+    ;; Bulk revoke multiple tokens
+    (define-public (bulk-revoke-tokens (token-ids (list 10 uint)))
+      (ok (map revoke-token-helper token-ids)))
+
+    (define-private (revoke-token-helper (token-id uint))
+      (match (revoke-access token-id)
+        success true
+        error false))
+
+    ;; Simple token count by owner (checks first 10 tokens)
+    (define-read-only (count-tokens-by-owner (owner principal))
+      (ok (fold count-token-helper (list u1 u2 u3 u4 u5 u6 u7 u8 u9 u10) {owner: owner, count: u0})))
+
+    (define-private (count-token-helper (token-id uint) (acc {owner: principal, count: uint}))
+      (if (is-eq (nft-get-owner? kyc-access token-id) (some (get owner acc)))
+        {owner: (get owner acc), count: (+ (get count acc) u1)}
+        acc))
+
